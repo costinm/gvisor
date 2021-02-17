@@ -382,9 +382,10 @@ func TestAddIpv6Address(t *testing.T) {
 
 func TestReceiveIPv6ExtHdrs(t *testing.T) {
 	tests := []struct {
-		name         string
-		extHdr       func(nextHdr uint8) ([]byte, uint8)
-		shouldAccept bool
+		name                   string
+		extHdr                 func(nextHdr uint8) ([]byte, uint8)
+		shouldAccept           bool
+		counterToBeIncremented func(tcpip.Stats) *tcpip.StatCounter
 		// Should we expect an ICMP response and if so, with what contents?
 		expectICMP bool
 		ICMPType   header.ICMPv6Type
@@ -397,6 +398,35 @@ func TestReceiveIPv6ExtHdrs(t *testing.T) {
 			extHdr:       func(nextHdr uint8) ([]byte, uint8) { return []byte{}, nextHdr },
 			shouldAccept: true,
 			expectICMP:   false,
+		},
+		{
+			name: "hopbyhop with router alert option",
+			extHdr: func(nextHdr uint8) ([]byte, uint8) {
+				return []byte{
+					nextHdr, 0,
+
+					// Router Alert option
+					5, 2, 0, 0, 0, 0,
+				}, hopByHopExtHdrID
+			},
+			shouldAccept:           true,
+			counterToBeIncremented: func(stats tcpip.Stats) *tcpip.StatCounter { return stats.IP.OptionRouterAlertReceived },
+		},
+		{
+			name: "hopbyhop with two router alert options",
+			extHdr: func(nextHdr uint8) ([]byte, uint8) {
+				return []byte{
+					nextHdr, 1,
+
+					// Router Alert option
+					5, 2, 0, 0, 0, 0,
+
+					// Router Alert option
+					5, 2, 0, 0, 0, 0, 0, 0,
+				}, hopByHopExtHdrID
+			},
+			shouldAccept:           false,
+			counterToBeIncremented: func(stats tcpip.Stats) *tcpip.StatCounter { return stats.IP.OptionRouterAlertReceived },
 		},
 		{
 			name: "hopbyhop with unknown option skippable action",
@@ -924,9 +954,21 @@ func TestReceiveIPv6ExtHdrs(t *testing.T) {
 				DstAddr:           dstAddr,
 			})
 
+			if test.counterToBeIncremented != nil {
+				if got := test.counterToBeIncremented(s.Stats()).Value(); got != 0 {
+					t.Errorf("before sending packet: got test.counterToBeIncremented(s.Stats()).Value() = %d, want = 0", got)
+				}
+			}
+
 			e.InjectInbound(ProtocolNumber, stack.NewPacketBuffer(stack.PacketBufferOptions{
 				Data: hdr.View().ToVectorisedView(),
 			}))
+
+			if test.counterToBeIncremented != nil {
+				if got := test.counterToBeIncremented(s.Stats()).Value(); got != 1 {
+					t.Errorf("after sending packet: got test.counterToBeIncremented(s.Stats()).Value() = %d, want = 1", got)
+				}
+			}
 
 			stats := s.Stats().UDP.PacketsReceived
 
