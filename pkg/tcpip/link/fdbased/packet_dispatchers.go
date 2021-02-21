@@ -17,6 +17,8 @@
 package fdbased
 
 import (
+	"io"
+	"log"
 	"syscall"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -47,10 +49,17 @@ type readVDispatcher struct {
 	// stripped before the views are passed up the stack for further
 	// processing.
 	iovecs []syscall.Iovec
+	conn   io.ReadWriteCloser
+	buf    []byte
 }
 
 func newReadVDispatcher(fd int, e *endpoint) (linkDispatcher, error) {
-	d := &readVDispatcher{fd: fd, e: e}
+	d := &readVDispatcher{fd: fd, e: e, conn: e.conn}
+
+	if e.conn != nil {
+		d.buf = make([]byte, 1600)
+	}
+
 	d.views = make([]buffer.View, len(BufConfig))
 	iovLen := len(BufConfig)
 	if d.e.Capabilities()&stack.CapabilityHardwareGSO != 0 {
@@ -100,11 +109,32 @@ func (d *readVDispatcher) capViews(n int, buffers []int) int {
 
 // dispatch reads one packet from the file descriptor and dispatches it.
 func (d *readVDispatcher) dispatch() (bool, *tcpip.Error) {
+	if d.conn != nil {
+		m1 := d.buf
+			n, err := d.conn.Read(m1)
+			if err != nil {
+				log.Println("NIC read err", err)
+				return false, nil
+			}
+			b := buffer.NewViewFromBytes(m1[0:n])
+			//log.Println("RD ", n, err)
+			pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+				Data: b.ToVectorisedView(),
+			})
+			d.e.dispatcher.DeliverNetworkPacket("", "",  header.IPv4ProtocolNumber, pkt)
+
+		return true, nil
+	}
+
 	d.allocateViews(BufConfig)
 
 	n, err := rawfile.BlockingReadv(d.fd, d.iovecs)
-	if n == 0 || err != nil {
+	if /*n == 0 || */ err != nil {
 		return false, err
+	}
+	if n == 0  {
+		log.Println("XXX")
+		return true, nil
 	}
 	if d.e.Capabilities()&stack.CapabilityHardwareGSO != 0 {
 		// Skip virtioNetHdr which is added before each packet, it

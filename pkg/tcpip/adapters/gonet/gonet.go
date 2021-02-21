@@ -50,6 +50,8 @@ type TCPListener struct {
 	ep     tcpip.Endpoint
 	wq     *waiter.Queue
 	cancel chan struct{}
+	// TUNGate: accept needs to reverse
+	ReverseAddr bool
 }
 
 // NewTCPListener creates a new TCPListener from a listening tcpip.Endpoint.
@@ -231,6 +233,9 @@ type TCPConn struct {
 	// read contains bytes that have been read from the endpoint,
 	// but haven't yet been returned.
 	read buffer.View
+
+	// TUNGate
+	revAddr bool
 }
 
 // NewTCPConn creates a new TCPConn.
@@ -277,7 +282,9 @@ func (l *TCPListener) Accept() (net.Conn, error) {
 		}
 	}
 
-	return NewTCPConn(wq, n), nil
+	tc := NewTCPConn(wq, n)
+	tc.revAddr = l.ReverseAddr
+	return tc, nil
 }
 
 type opErrorer interface {
@@ -470,6 +477,13 @@ func (c *TCPConn) CloseWrite() error {
 
 // LocalAddr implements net.Conn.LocalAddr.
 func (c *TCPConn) LocalAddr() net.Addr {
+	if c.revAddr {
+		a, err := c.ep.GetRemoteAddress()
+		if err != nil {
+			return nil
+		}
+		return fullToTCPAddr(a)
+	}
 	a, err := c.ep.GetLocalAddress()
 	if err != nil {
 		return nil
@@ -479,6 +493,13 @@ func (c *TCPConn) LocalAddr() net.Addr {
 
 // RemoteAddr implements net.Conn.RemoteAddr.
 func (c *TCPConn) RemoteAddr() net.Addr {
+	if c.revAddr {
+		a, err := c.ep.GetLocalAddress()
+		if err != nil {
+			return nil
+		}
+		return fullToTCPAddr(a)
+	}
 	a, err := c.ep.GetRemoteAddress()
 	if err != nil {
 		return nil

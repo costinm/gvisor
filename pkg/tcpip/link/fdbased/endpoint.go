@@ -41,6 +41,8 @@ package fdbased
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -132,7 +134,8 @@ type endpoint struct {
 	gsoMaxSize uint32
 
 	// wg keeps track of running goroutines.
-	wg sync.WaitGroup
+	wg   sync.WaitGroup
+	conn io.ReadWriteCloser
 }
 
 // Options specify the details about the fd-based endpoint to be created.
@@ -181,6 +184,8 @@ type Options struct {
 	// RXChecksumOffload if true, indicates that this endpoints capability
 	// set should include CapabilityRXChecksumOffload.
 	RXChecksumOffload bool
+
+	File io.ReadWriteCloser
 }
 
 // fanoutID is used for AF_PACKET based endpoints to enable PACKET_FANOUT
@@ -232,6 +237,7 @@ func New(opts *Options) (stack.LinkEndpoint, error) {
 		addr:               opts.Address,
 		hdrSize:            hdrSize,
 		packetDispatchMode: opts.PacketDispatchMode,
+		conn: opts.File,
 	}
 
 	// Create per channel dispatchers.
@@ -572,6 +578,7 @@ func (e *endpoint) dispatchLoop(inboundDispatcher linkDispatcher) *tcpip.Error {
 	for {
 		cont, err := inboundDispatcher.dispatch()
 		if err != nil || !cont {
+			log.Println("DISPATCH END !!!")
 			if e.closed != nil {
 				e.closed(err)
 			}
